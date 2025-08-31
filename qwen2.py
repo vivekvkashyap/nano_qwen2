@@ -200,6 +200,30 @@ class Qwen(nn.Module):
                     print(f"Warning: Key {custom_key} not found in custom model")
         return model
     
+class DataLoaderLite:
+    def __init__(self, B, T):
+        self.B = B
+        self.T = T
+        with open('input.txt', 'r') as f:
+            text = f.read()
+        tokens = tokenizer.encode(text)
+        self.tokens = torch.tensor(tokens)
+        print(f"loaded {len(self.tokens)} tokens")
+
+        self.current_position = 0
+    
+    def next_batch(self):
+        B, T = self.B, self.T
+        buf = self.tokens[self.current_position : self.current_position+B*T+1]
+        x = (buf[:-1]).view(B, T)
+        y = (buf[1:]).view(B, T)
+        self.current_position += B * T
+        if self.current_position + (B * T +1) > len(self.tokens):
+            self.current_position = 0
+        return x, y
+
+
+    
 device = "cpu"
 if torch.cuda.is_available():
     device = "cuda"
@@ -209,28 +233,16 @@ tokenizer = AutoTokenizer.from_pretrained('Qwen/Qwen2-0.5B', trust_remote_code=T
 model = Qwen(QwenConfig())
 print('success')
 
-with open('input.txt', 'r') as f:
-    text = f.read()
-text = text[:1000]
-print(text)
-tokens = tokenizer.encode(text)
-B, T = 4, 32
-buf = torch.tensor(tokens[:B*T+1])
-# print(tokenizer.decode(buf))
-x = buf[:-1].view(B,T)
-y = buf[1:].view(B,T)
-# print(x)
-# print(y)
-# import sys; sys.exit(0)
-x, y = x.to(device), y.to(device)
 
-
+train_loader = DataLoaderLite(B=4, T=32)
 model.eval()
 model.to(device)
 # logits, loss = model(x, y)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
+    x, y = train_loader.next_batch()
+    x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
     logits, loss = model(x, y)
     loss.backward()
