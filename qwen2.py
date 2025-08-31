@@ -6,8 +6,8 @@ import math
 from transformers import Qwen2Model
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-torch.manual_seed(52)
-torch.cuda.manual_seed(52)
+torch.manual_seed(42)
+torch.cuda.manual_seed(42)
 
 @dataclass
 class QwenConfig:
@@ -139,7 +139,17 @@ class Qwen(nn.Module):
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.lm_head.weight = self.embed_tokens.weight
 
-    def forward(self, idx):
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def forward(self, idx, targets=None):
         B, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
         x = self.embed_tokens(idx)
@@ -147,7 +157,10 @@ class Qwen(nn.Module):
             x = block(x)
         x = self.norm(x)
         logits = self.lm_head(x)
-        return logits
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss
 
     @classmethod
     def from_pretrained(cls, model_type):
@@ -176,10 +189,8 @@ class Qwen(nn.Module):
                     print("Skipping lm_head.weight (tied with embeddings)")
                     continue
                 else:
-                
                     sd[k].copy_(sd_hf[k])
             else:
-                
                 custom_key = k[6:]  
                 if custom_key in sd:
                     sd[custom_key].copy_(sd_hf[k])
@@ -193,19 +204,46 @@ device = "cpu"
 if torch.cuda.is_available():
     device = "cuda"
 print("using device", device)
+tokenizer = AutoTokenizer.from_pretrained('Qwen/Qwen2-0.5B', trust_remote_code=True)
 # model = Qwen.from_pretrained('Qwen/Qwen2-0.5B')
 model = Qwen(QwenConfig())
 print('success')
 
+with open('input.txt', 'r') as f:
+    text = f.read()
+text = text[:1000]
+print(text)
+tokens = tokenizer.encode(text)
+B, T = 4, 32
+buf = torch.tensor(tokens[:B*T+1])
+# print(tokenizer.decode(buf))
+x = buf[:-1].view(B,T)
+y = buf[1:].view(B,T)
+# print(x)
+# print(y)
+# import sys; sys.exit(0)
+x, y = x.to(device), y.to(device)
+
+
 model.eval()
 model.to(device)
+# logits, loss = model(x, y)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for i in range(50):
+    optimizer.zero_grad()
+    logits, loss = model(x, y)
+    loss.backward()
+    optimizer.step()
+    print(f"step: {i}, loss: {loss.item()}")
+import sys; sys.exit(0)
 
 max_length = 30
 num_return_sequences = 5
 
 from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained('Qwen/Qwen2-0.5B', trust_remote_code=True)
-tokens = tokenizer.encode("<|endoftext|>  Hello, I'm a language model")
+tokens = tokenizer.encode("Hello, I'm a language model")
 tokens = torch.tensor(tokens, dtype=torch.long).unsqueeze(0).repeat(num_return_sequences, 1)
 x = tokens.to('cuda')
 
